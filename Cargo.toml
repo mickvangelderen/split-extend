@@ -2,5 +2,11 @@
 name = "split-spare"
 version = "0.1.0"
 edition = "2024"
+authors = ["Mick van Gelderen"]
+description = "A trait to allow referencing the already initialized part of a collection while pushing into it's reserved capacity."
+repository = "https://github.com/mickvangelderen/split-spare"
+license = "MIT OR Apache-2.0"
+keywords = ["vec", "split", "spare", "capacity", "extend"]
+categories = ["rust-patterns"]
 
 [dependencies]
