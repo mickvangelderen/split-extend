@@ -3,19 +3,65 @@ use std::ptr::NonNull;
 
 /// Determines the offset of the len field within a Vec.
 #[inline]
-const fn vec_len_offset<T>() -> usize {
-    // SAFETY:
-    // - Vec<T> requires that ptr be non-null and aligned and what not, but Vec::len doesn't touch ptr.
-    // - Vec<T> requires that cap >= len, but Vec::len doesn't touch cap.
-    // - Vec<T> and [usize; 3] have the same layout and alignment.
-    unsafe { std::mem::transmute::<&[usize; 3], &Vec<T>>(&[0, 1, 2]).len() }
+fn vec_len_offset_of_val<T>(vec: &mut Vec<T>) -> usize {
+    // See https://users.rust-lang.org/t/134050 for why the implementation here is the way it is. We have to work around
+    // unsound manipulations to Vec.
+    if std::mem::size_of::<T>() == 0 {
+        // ZST
+
+        // Use ManuallyDrop to avoid dropping non-existing elements caused by `set_len`.
+        let mut vec: Vec<std::mem::MaybeUninit<T>> =
+            unsafe { std::mem::transmute(Vec::<T>::new()) };
+
+        // Should be a no-op, but just in case Vec's internals require this.
+        vec.reserve(1);
+
+        let before: [usize; 3] = unsafe { std::mem::transmute_copy(&vec) };
+
+        // SAFETY:
+        // - T is zero-sized and the Vec's drop won't be called, so we can set the len to anything
+        unsafe {
+            vec.set_len(1);
+        }
+
+        let after: [usize; 3] = unsafe { std::mem::transmute_copy(&vec) };
+
+        match std::array::from_fn(|i| after[i] ^ before[i]) {
+            [_, 0, 0] => 0,
+            [0, _, 0] => 1,
+            [0, 0, _] => 2,
+            _ => unreachable!(),
+        }
+    } else {
+        // Non-ZST
+
+        // Ensure the capacity is non-zero.
+        vec.reserve(1);
+
+        // Get the ptr/cap/len triple with the length set to 0.
+        let parts = unsafe {
+            let orig_len = vec.len();
+            vec.set_len(0);
+            let parts: [usize; 3] = std::mem::transmute_copy(&*vec);
+            vec.set_len(orig_len);
+            parts
+        };
+
+        // As per the layout guarantees, *only* the length should be 0.
+        match parts {
+            [0, a, b] if a != 0 && b != 0 => 0,
+            [a, 0, b] if a != 0 && b != 0 => 1,
+            [a, b, 0] if a != 0 && b != 0 => 2,
+            _ => unreachable!(),
+        }
+    }
 }
 
 /// Safety: changing returned .2 (&mut usize) is considered the same as calling `.set_len(_)`.
 ///
 /// This method provides unique access to all vec parts at once.
 #[inline]
-const unsafe fn vec_split_at_spare_mut_with_len<T>(
+unsafe fn vec_split_at_spare_mut_with_len<T>(
     vec: &mut Vec<T>,
 ) -> (&mut [T], &mut [MaybeUninit<T>], &mut usize) {
     let ptr = vec.as_mut_ptr();
@@ -35,7 +81,7 @@ const unsafe fn vec_split_at_spare_mut_with_len<T>(
         NonNull::new(vec as *mut Vec<T>)
             .unwrap()
             .cast::<usize>()
-            .add(vec_len_offset::<T>())
+            .add(vec_len_offset_of_val(vec))
             .as_mut()
     };
 
